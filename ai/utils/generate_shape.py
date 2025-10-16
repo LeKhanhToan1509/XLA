@@ -1,22 +1,31 @@
+try:
+    import cupy as np
+    print("✅ Using GPU (CuPy)")
+    GPU_AVAILABLE = True
+except ImportError:
+    import numpy as np
+    print("⚠️  Using CPU (NumPy)")
+    GPU_AVAILABLE = False
 import cv2
-import numpy as np
 import os
 import random
 from tqdm import tqdm
 
-IMG_SIZE = 64
-DATA_DIR = "data_best"
+# --- Config ---
+IMG_SIZE = 28
 CLASSES = ["circle", "square", "triangle"]
-NUM_IMAGES = 1000
+NUM_IMAGES = 1000  # tổng mỗi class
+ROOT_DIR = r"D:\PTIT\XLA\ai\data"
+SPLIT_RATIO = {"train": 0.7, "val": 0.15, "test": 0.15}
 
-# --- Utility noise + transform functions ---
-def add_gaussian_noise(img, var=40):
+# --- Utility functions ---
+def add_gaussian_noise(img, var=20):
     sigma = var ** 0.5
     noise = np.random.normal(0, sigma, img.shape).astype(np.float32)
     img = img.astype(np.float32) + noise
     return np.clip(img, 0, 255).astype(np.uint8)
 
-def add_salt_pepper_noise(img, amount=0.02):
+def add_salt_pepper_noise(img, amount=0.01):
     noisy = img.copy()
     num_salt = int(amount * img.size * 0.5)
     coords = [np.random.randint(0, i - 1, num_salt) for i in img.shape[:2]]
@@ -28,19 +37,17 @@ def add_salt_pepper_noise(img, amount=0.02):
     return noisy
 
 def random_background(size):
-    base = np.random.randint(30, 100, (size, size, 3), dtype=np.uint8)
-    overlay = cv2.GaussianBlur(base, (3,3), random.uniform(0,1.5))
+    base = np.random.randint(40, 120, (size, size, 3), dtype=np.uint8)
+    overlay = cv2.GaussianBlur(base, (3,3), random.uniform(0,1.2))
     return overlay
 
 # --- Core shape generator ---
 def create_shape(shape_type, size=IMG_SIZE):
     img = random_background(size)
 
-    # Random vị trí, kích thước, góc xoay
-    center = (random.randint(15, size-15), random.randint(15, size-15))
-    s = random.randint(10, size//3)
+    center = (random.randint(6, size-6), random.randint(6, size-6))
+    s = random.randint(4, size//3)
     angle = random.randint(0, 180)
-
     color = (255, 255, 255)
 
     if shape_type == "circle":
@@ -67,11 +74,11 @@ def create_shape(shape_type, size=IMG_SIZE):
         pts = np.int32(cv2.transform(np.array([pts]), M))
         cv2.fillPoly(img, [pts], color)
 
-    # --- Augmentation nhẹ ---
+    # Augmentation
     if random.random() < 0.7:
-        img = add_gaussian_noise(img, var=random.randint(20, 60))
-    if random.random() < 0.5:
-        img = add_salt_pepper_noise(img, amount=random.uniform(0.01, 0.03))
+        img = add_gaussian_noise(img, var=random.randint(10, 40))
+    if random.random() < 0.4:
+        img = add_salt_pepper_noise(img, amount=random.uniform(0.005, 0.02))
     if random.random() < 0.3:
         img = cv2.GaussianBlur(img, (3,3), random.uniform(0,1))
     if random.random() < 0.4:
@@ -82,15 +89,32 @@ def create_shape(shape_type, size=IMG_SIZE):
 
 # --- Dataset generator ---
 def generate_dataset():
-    os.makedirs(DATA_DIR, exist_ok=True)
+    # Tạo folder train/val/test + class
+    for split in SPLIT_RATIO.keys():
+        for cls in CLASSES:
+            os.makedirs(os.path.join(ROOT_DIR, split, cls), exist_ok=True)
+
     for cls in CLASSES:
-        out_dir = os.path.join(DATA_DIR, cls)
-        os.makedirs(out_dir, exist_ok=True)
-        print(f"⚙️ Generating {cls} images...")
+        print(f"⚙️ Generating {cls}...")
         for i in tqdm(range(NUM_IMAGES)):
             img = create_shape(cls)
-            cv2.imwrite(os.path.join(out_dir, f"{cls}_{i}.png"), img)
+            
+            # xác định subset (train/val/test)
+            r = random.random()
+            if r < SPLIT_RATIO["train"]:
+                subset = "train"
+            elif r < SPLIT_RATIO["train"] + SPLIT_RATIO["val"]:
+                subset = "val"
+            else:
+                subset = "test"
+            
+            out_path = os.path.join(ROOT_DIR, subset, cls, f"{cls}_{i}.png")
+            cv2.imwrite(out_path, img)
 
+    print("\n✅ Done! Dataset saved to:")
+    for k in SPLIT_RATIO.keys():
+        print("   ", os.path.join(ROOT_DIR, k))
+
+# --- Run ---
 if __name__ == "__main__":
     generate_dataset()
-    print("\n✅ Done! Dataset saved in 'data_best/'")

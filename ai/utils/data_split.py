@@ -34,4 +34,3 @@ for cls in tqdm(os.listdir(SOURCE_DIR), desc="Splitting classes"):
             src = os.path.join(src_folder, img_name)
             dst = os.path.join(DEST_DIR, subset, cls, img_name)
             shutil.copy2(src, dst)
-

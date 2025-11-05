@@ -29,9 +29,9 @@ except ImportError:
     import numpy as np
     print("⚠️  Using CPU (NumPy)")
     GPU_AVAILABLE = False
-from model.layers import Conv, BatchNorm, ReLU, MaxPool, Fc, Softmax, CrossEntropyLoss
-from utils.optimizers import Adam
-from configs.config import NUM_CLASSES, INPUT_SHAPE
+from ai.model.layers import Conv, BatchNorm, ReLU, MaxPool, Fc, Softmax, CrossEntropyLoss
+from ai.utils.optimizers import Adam
+from ai.configs.config import NUM_CLASSES, INPUT_SHAPE
 
 class ResidualBlock:
     """

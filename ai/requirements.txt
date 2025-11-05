@@ -1,0 +1,4 @@
+opencv-python==4.10.0.84
+tqdm==4.66.5
+cupy-cuda12x==13.3.0
+

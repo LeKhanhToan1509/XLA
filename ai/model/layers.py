@@ -21,7 +21,7 @@ except ImportError:
     print("⚠️  Using CPU (NumPy)")
     GPU_AVAILABLE = False
     
-from utils.utils import im2col, col2im, get_indices
+from ai.utils.utils import im2col, col2im, get_indices
 
 class Conv:
     """

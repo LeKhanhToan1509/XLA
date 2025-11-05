@@ -33,7 +33,7 @@ except ImportError:
     print("⚠️ Using CPU (NumPy)")
     GPU_AVAILABLE = False
 
-from configs.config import BATCH_SIZE
+from ai.configs.config import BATCH_SIZE
 
 class DataLoader:
     def __init__(self, X, y, batch_size=BATCH_SIZE, shuffle=True):

@@ -26,10 +26,9 @@ import cv2
 import os
 from tqdm import tqdm
 import pickle
-from model.resnet import ResNet50
-from data.dataloader import DataLoader
-from configs.config import BATCH_SIZE, EPOCHS, INPUT_SHAPE, NUM_CLASSES
-from training.train import train_model, evaluate
+from ai.data.dataloader import DataLoader
+from ai.configs.config import BATCH_SIZE, INPUT_SHAPE, NUM_CLASSES
+from ai.training.train import train_model, evaluate
 
 def load_images_from_folder(root_folder, img_size=(28, 28)):
     """
@@ -132,7 +131,7 @@ def main():
     print("=" * 60)
     
     # Paths
-    DATA_ROOT = r"d:\PTIT\XLA\ai\data"
+    DATA_ROOT = r"E:\PTIT\XLA\ai\data"
     TRAIN_DIR = os.path.join(DATA_ROOT, "train")
     VAL_DIR = os.path.join(DATA_ROOT, "val")
     TEST_DIR = os.path.join(DATA_ROOT, "test")
@@ -198,9 +197,6 @@ def main():
     model.set_inference(False)
     
     print("\n" + "=" * 60)
-    print("✅ TRAINING COMPLETED!")
-    print("=" * 60)
-
 
 if __name__ == "__main__":
     main()

@@ -36,22 +36,15 @@ except ImportError:
     import numpy as np
     print("⚠️  Using CPU (NumPy)")
     GPU_AVAILABLE = False
-from model.resnet import ResNet50
-from data.dataloader import DataLoader
-from configs.config import EPOCHS, LEARNING_RATE
-from model.layers import CrossEntropyLoss
+from ai.model.resnet import ResNet50
+from ai.data.dataloader import DataLoader
+from ai.configs.config import EPOCHS, LEARNING_RATE
+from ai.model.layers import CrossEntropyLoss
 from tqdm import tqdm
 import time
 
 def train_model(X_train, y_train, X_val, y_val, num_classes=10):  # Điều chỉnh num_classes
     from configs.config import BATCH_SIZE
-    
-    print(f"\n🔧 Initializing ResNet50 model...")
-    print(f"   - Number of classes: {num_classes}")
-    print(f"   - Batch size: {BATCH_SIZE}")
-    print(f"   - Learning rate: {LEARNING_RATE}")
-    print(f"   - Training samples: {len(X_train)}")
-    print(f"   - Validation samples: {len(X_val)}")
     
     model = ResNet50(num_classes=num_classes)
     train_loader = DataLoader(X_train, y_train, BATCH_SIZE)
@@ -152,6 +145,10 @@ def evaluate(model, loader, num_classes):
     
     # Chuyển về training mode
     model.set_inference(False)
-    
-    # Tính accuracy
+
+    # Tính accuracy: guard against zero total to avoid ZeroDivisionError
+    if total == 0:
+        print("\n\u26a0\ufe0f  Warning: No samples were provided to evaluate() (total=0). Returning accuracy=0.0")
+        return 0.0
+
     return correct / total

@@ -44,7 +44,7 @@ from tqdm import tqdm
 import time
 
 def train_model(X_train, y_train, X_val, y_val, num_classes=10):  # ﾄ進盻「 ch盻穎h num_classes
-    from configs.config import BATCH_SIZE
+    from ai.configs.config import BATCH_SIZE
     
     model = ResNet50(num_classes=num_classes)
     train_loader = DataLoader(X_train, y_train, BATCH_SIZE)
@@ -58,6 +58,15 @@ def train_model(X_train, y_train, X_val, y_val, num_classes=10):  # ﾄ進盻「 ch盻
     best_val_acc = 0.0
     
     for epoch in range(EPOCHS):
+        # Clear GPU cache every few epochs to prevent OOM on 4GB VRAM
+        if GPU_AVAILABLE and epoch > 0 and epoch % 3 == 0:
+            try:
+                import cupy as cp
+                cp.get_default_memory_pool().free_all_blocks()
+                print(f"\nｧｹ Cleared GPU memory cache")
+            except:
+                pass
+        
         print(f"\n{'='*60}")
         print(f"投 Epoch {epoch+1}/{EPOCHS}")
         print(f"{'='*60}")
@@ -75,6 +84,16 @@ def train_model(X_train, y_train, X_val, y_val, num_classes=10):  # ﾄ進盻「 ch盻
         
         for X_batch, y_batch in pbar:
             y_onehot = train_loader.one_hot(y_batch, num_classes)
+            
+            # Debug log for first batch of first epoch to verify shapes
+            if epoch == 0 and batch_count == 0:
+                print(f"\n剥 Debug - First batch shapes:")
+                print(f"   X_batch: {X_batch.shape}")
+                print(f"   y_batch: {y_batch.shape} (integer labels)")
+                print(f"   y_onehot: {y_onehot.shape} (one-hot encoded)")
+                print(f"   y_batch sample: {y_batch[:5]}")
+                print(f"   y_onehot sample:\n{y_onehot[:2]}\n")
+            
             loss = model.train_step(X_batch, y_onehot)
             total_loss += loss
             batch_count += 1

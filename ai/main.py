@@ -135,6 +135,10 @@ def main():
     TRAIN_DIR = os.path.join(DATA_ROOT, "train")
     VAL_DIR = os.path.join(DATA_ROOT, "val")
     TEST_DIR = os.path.join(DATA_ROOT, "test")
+    print(len(DATA_ROOT))
+    print(len(TRAIN_DIR))
+    print(len(VAL_DIR))
+    print(len(TEST_DIR))
     MODEL_SAVE_PATH = "resnet50_model.pkl"
     
     # Kiểm tra xem thư mục có tồn tại không
@@ -176,27 +180,81 @@ def main():
     print("\n" + "=" * 60)
     print("🧪 STEP 3: FINAL EVALUATION ON TEST SET")
     print("=" * 60)
-    
-    test_loader = DataLoader(X_test, y_test, BATCH_SIZE, shuffle=False)
-    test_acc = evaluate(model, test_loader, num_classes)
-    
-    print(f"\n🎯 Final Test Accuracy: {test_acc * 100:.2f}%")
-    
-    # Per-class accuracy
-    print("\n📊 Per-class accuracy:")
-    model.set_inference(True)
-    for idx, class_name in enumerate(class_names):
-        class_mask = y_test == idx
-        if np.sum(class_mask) == 0:
-            continue
-        X_class = X_test[class_mask]
-        y_class = y_test[class_mask]
-        y_pred = model.predict(X_class)
-        acc = np.mean(y_pred == y_class)
-        print(f"   {class_name:12s}: {acc * 100:5.2f}% ({np.sum(y_pred == y_class)}/{len(y_class)})")
-    model.set_inference(False)
-    
-    print("\n" + "=" * 60)
+    # Diagnostics: check test set sizes before evaluation to avoid silent 0-sample warning
+    try:
+        X_test_len = len(X_test)
+    except Exception:
+        X_test_len = 0
+    try:
+        y_test_len = len(y_test)
+    except Exception:
+        y_test_len = 0
+
+    print(f"ℹ️  Test set sizes: X_test={X_test_len}, y_test={y_test_len}")
+
+    if X_test_len == 0 or y_test_len == 0:
+        print("\n⚠️  Test set is empty — skipping final evaluation and per-class metrics.\n   -> Check data loading paths, dataset generation, or that test files exist.")
+    else:
+        if X_test_len != y_test_len:
+            print("\n⚠️  Mismatch between X_test and y_test lengths! Using min length for safety.")
+            min_len = min(X_test_len, y_test_len)
+            X_test = X_test[:min_len]
+            y_test = y_test[:min_len]
+
+        test_loader = DataLoader(X_test, y_test, BATCH_SIZE, shuffle=False)
+        test_acc = evaluate(model, test_loader, num_classes)
+        print(f"\n🎯 Final Test Accuracy: {test_acc * 100:.2f}%")
+
+        # Per-class accuracy (process in small batches to avoid GPU OOM on 4GB VRAM)
+        print("\n📊 Per-class accuracy:")
+        model.set_inference(True)
+
+        # Use smaller batch size for memory-constrained evaluation
+        eval_batch_size = 4  # Small batch for 4GB VRAM (tweak as needed)
+
+        for idx, class_name in enumerate(class_names):
+            class_mask = y_test == idx
+            if np.sum(class_mask) == 0:
+                print(f"   {class_name:12s}: No samples (skipped)")
+                continue
+
+            X_class = X_test[class_mask]
+            y_class = y_test[class_mask]
+
+            # Process in small batches to avoid OOM
+            all_predictions = []
+            num_samples = len(X_class)
+
+            for i in range(0, num_samples, eval_batch_size):
+                batch_end = min(i + eval_batch_size, num_samples)
+                X_batch = X_class[i:batch_end]
+
+                try:
+                    y_pred_batch = model.predict(X_batch)
+                    all_predictions.append(y_pred_batch)
+                except Exception as e:
+                    # If GPU OOM happens, suggest fallback to CPU mode
+                    if "OutOfMemoryError" in str(type(e).__name__) or "OutOfMemoryError" in str(e):
+                        print(f"\n⚠️  GPU Out of Memory while evaluating class '{class_name}'.")
+                        print("   Suggestion: set CUDA_VISIBLE_DEVICES= to force CPU or reduce eval_batch_size further.")
+                        # Try to free GPU memory cache if available
+                        try:
+                            import ai.utils.gpu_utils as gpu_utils
+                            gpu_utils.clear_gpu_memory()
+                        except Exception:
+                            pass
+                        raise
+                    else:
+                        raise
+
+            # Concatenate all predictions
+            y_pred = np.concatenate(all_predictions) if len(all_predictions) > 0 else np.array([])
+            acc = np.mean(y_pred == y_class) if len(y_pred) > 0 else 0.0
+            print(f"   {class_name:12s}: {acc * 100:5.2f}% ({np.sum(y_pred == y_class)}/{len(y_class)})")
+
+        model.set_inference(False)
+
+        print("\n" + "=" * 60)
 
 if __name__ == "__main__":
     main()

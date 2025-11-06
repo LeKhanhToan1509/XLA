@@ -33,17 +33,18 @@ Input tensor dimensions (Channels, Height, Width)
 
 # Training Configuration  
 # ======================
-BATCH_SIZE = 32
+BATCH_SIZE = 16  # Optimized for 4GB VRAM
 """
 Số samples mỗi mini-batch
 - Trade-off giữa memory usage và gradient stability
 - Larger batch: More stable gradients, cần more memory
 - Smaller batch: Less memory, more noisy gradients
 - Typical values: 16, 32, 64, 128
-- Using 8 for memory efficiency với custom ResNet
+- Using 4 for 4GB VRAM constraint (can try 8 if stable)
+- ⚠️ For 4GB VRAM: BATCH_SIZE=4 is safe, 8 might OOM depending on image size
 """
 
-LEARNING_RATE = 0.0001
+LEARNING_RATE = 0.001
 """
 Adam optimizer learning rate (α)
 - Controls step size trong gradient descent
@@ -53,7 +54,7 @@ Adam optimizer learning rate (α)
 - Using 0.0001 for stable training from scratch
 """
 
-EPOCHS = 10
+EPOCHS = 30
 """
 Số epochs để training
 - 1 epoch = 1 full pass qua toàn bộ training data

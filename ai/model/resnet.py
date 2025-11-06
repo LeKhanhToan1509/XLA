@@ -257,6 +257,8 @@ class ResNet50:
     def train_step(self, X, y):
         """
         Training step with forward + backward
+        
+        Accepts both integer labels and one-hot encoded labels.
         """
         # Nếu y chưa phải one-hot (shape = (batch_size,)), thì one-hot encode
         if len(y.shape) == 1:
@@ -270,6 +272,13 @@ class ResNet50:
         
         # Forward pass
         y_pred = self.forward(X)
+        
+        # Verify shapes for debugging (only print once)
+        if not hasattr(self, '_debug_printed'):
+            self._debug_printed = True
+            # Only print if shapes look unexpected
+            if y_pred.shape != y_onehot.shape:
+                print(f"⚠️  Shape mismatch in train_step: y_pred {y_pred.shape} vs y_onehot {y_onehot.shape}")
         
         # Loss computation
         loss = self.loss_fn.get(y_pred, y_onehot)

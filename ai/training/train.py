@@ -83,6 +83,13 @@ def train_model(X_train, y_train, X_val, y_val, num_classes=10):  # Điều ch�
             pbar.set_postfix({'loss': f'{loss:.4f}', 'avg_loss': f'{total_loss/batch_count:.4f}'})
         
         epoch_time = time.time() - start_time
+        
+        # Guard against division by zero when no batches were processed
+        if batch_count == 0:
+            print(f"\n⚠️  Warning: No training batches were processed in epoch {epoch+1}!")
+            print(f"   Please check if training data is empty or batch size is too large.")
+            continue
+        
         avg_loss = total_loss / batch_count
         
         print(f"\n📉 Training Results:")

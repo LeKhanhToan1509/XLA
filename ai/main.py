@@ -4,6 +4,14 @@ Main Training Script for ResNet50
 
 Script này load data, train ResNet50 model, và evaluate performance.
 
+Usage:
+    # Run from project root directory (XLA/)
+    python -m ai.main
+    
+    # Or using absolute import
+    cd XLA
+    python -m ai.main
+
 Workflow:
 1. Load và preprocess data từ thư mục train/val/test
 2. Initialize ResNet50 model
@@ -11,6 +19,11 @@ Workflow:
 4. Validation sau mỗi epoch
 5. Save model checkpoints
 6. Final evaluation trên test set
+
+Note:
+    - Paths are relative to current working directory
+    - Make sure to run from project root (XLA/)
+    - Data should be in ai/data/train, ai/data/val, ai/data/test
 """
 
 try:
@@ -130,21 +143,30 @@ def main():
     print("🚀 ResNet50 Training Pipeline")
     print("=" * 60)
     
-    # Paths
-    DATA_ROOT = r"E:\PTIT\XLA\ai\data"
+    # Paths - use relative path from current working directory
+    # Supports both: python main.py and python -m ai.main
+    DATA_ROOT = "ai/data"
     TRAIN_DIR = os.path.join(DATA_ROOT, "train")
     VAL_DIR = os.path.join(DATA_ROOT, "val")
     TEST_DIR = os.path.join(DATA_ROOT, "test")
-    print(len(DATA_ROOT))
-    print(len(TRAIN_DIR))
-    print(len(VAL_DIR))
-    print(len(TEST_DIR))
-    MODEL_SAVE_PATH = "resnet50_model.pkl"
+    MODEL_SAVE_PATH = "ai/resnet50_model.pkl"
+    
+    print(f"\n📂 Data paths:")
+    print(f"   DATA_ROOT: {DATA_ROOT}")
+    print(f"   TRAIN_DIR: {TRAIN_DIR}")
+    print(f"   VAL_DIR: {VAL_DIR}")
+    print(f"   TEST_DIR: {TEST_DIR}")
     
     # Kiểm tra xem thư mục có tồn tại không
     if not os.path.exists(TRAIN_DIR):
         print(f"❌ Error: Training directory not found: {TRAIN_DIR}")
         return
+    if not os.path.exists(VAL_DIR):
+        print(f"⚠️  Warning: Validation directory not found: {VAL_DIR}")
+        print(f"   Training will proceed without validation.")
+    if not os.path.exists(TEST_DIR):
+        print(f"⚠️  Warning: Test directory not found: {TEST_DIR}")
+        print(f"   Final evaluation will be skipped.")
     
     # Load data
     print("\n" + "=" * 60)
@@ -155,11 +177,27 @@ def main():
     img_h, img_w = INPUT_SHAPE[1], INPUT_SHAPE[2]
     
     X_train, y_train, class_names = load_images_from_folder(TRAIN_DIR, img_size=(img_h, img_w))
-    X_val, y_val, _ = load_images_from_folder(VAL_DIR, img_size=(img_h, img_w))
-    X_test, y_test, _ = load_images_from_folder(TEST_DIR, img_size=(img_h, img_w))
+    
+    # Load validation data if directory exists
+    if os.path.exists(VAL_DIR):
+        X_val, y_val, _ = load_images_from_folder(VAL_DIR, img_size=(img_h, img_w))
+    else:
+        print(f"\n⚠️  Validation directory not found, using empty validation set")
+        X_val, y_val = np.array([]), np.array([])
+    
+    # Load test data if directory exists
+    if os.path.exists(TEST_DIR):
+        X_test, y_test, _ = load_images_from_folder(TEST_DIR, img_size=(img_h, img_w))
+    else:
+        print(f"\n⚠️  Test directory not found, using empty test set")
+        X_test, y_test = np.array([]), np.array([])
     
     num_classes = len(class_names)
     print(f"\n🎯 Number of classes: {num_classes}")
+    print(f"📊 Dataset sizes:")
+    print(f"   Train: {len(X_train)} samples")
+    print(f"   Val: {len(X_val)} samples")
+    print(f"   Test: {len(X_test)} samples")
     
     # Update config nếu khác
     if num_classes != NUM_CLASSES:

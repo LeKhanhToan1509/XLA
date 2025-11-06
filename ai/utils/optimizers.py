@@ -87,8 +87,21 @@ class Adam:
         
         # Cập nhật từng parameter
         for key in params:
-            # Lấy gradient tương ứng (có thể cần adjust key matching)
-            grad = grads.get(f'd{key.split("_")[0]}_{key.split("_")[1]}', np.zeros_like(params[key]))
+            # Lấy gradient tương ứng (key matching phải chính xác)
+            # grads và params dùng cùng key format: 'W_12345', 'b_12345', etc.
+            if key not in grads:
+                # Debug: print warning if gradient not found
+                if self.t == 1:  # Only print once at first update
+                    print(f"⚠️  Warning: No gradient found for parameter '{key}' - skipping update")
+                continue
+            
+            grad = grads[key]
+            
+            # Skip if gradient is None or all zeros
+            if grad is None or np.sum(np.abs(grad)) == 0:
+                if self.t == 1:
+                    print(f"⚠️  Warning: Zero gradient for parameter '{key}' - skipping update")
+                continue
             
             # Update biased first moment estimate: mt = β1*m(t-1) + (1-β1)*gt
             self.m[key] = self.beta1 * self.m[key] + (1 - self.beta1) * grad

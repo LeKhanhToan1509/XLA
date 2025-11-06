@@ -115,15 +115,18 @@ def train_model(X_train, y_train, X_val, y_val, num_classes=10):  # Điều ch�
         print(f"   - Average Loss: {avg_loss:.4f}")
         print(f"   - Time: {epoch_time:.2f}s ({epoch_time/60:.2f}m)")
         
-        # Validation
-        print(f"\n🔍 Validating...")
-        val_acc = evaluate(model, val_loader, num_classes)
-        print(f"✅ Validation Accuracy: {val_acc*100:.2f}%")
-        
-        # Track best model
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            print(f"🎯 New best validation accuracy!")
+        # Validation (skip if validation set is empty)
+        if len(X_val) > 0:
+            print(f"\n🔍 Validating...")
+            val_acc = evaluate(model, val_loader, num_classes)
+            print(f"✅ Validation Accuracy: {val_acc*100:.2f}%")
+            
+            # Track best model
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                print(f"🎯 New best validation accuracy!")
+        else:
+            print(f"\n⚠️  Skipping validation (no validation data)")
     
     print(f"\n{'='*60}")
     print(f"🏆 Training completed!")

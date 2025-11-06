@@ -193,6 +193,24 @@ class ResNet50:
             elif isinstance(layer, BatchNorm):
                 params[f'gamma_{id(layer)}'] = layer.gamma['val']
                 params[f'beta_{id(layer)}'] = layer.beta['val']
+            elif isinstance(layer, ResidualBlock):
+                # Residual blocks contain Conv and BN layers
+                if hasattr(layer, 'conv1') and isinstance(layer.conv1, Conv):
+                    params[f'W_{id(layer.conv1)}'] = layer.conv1.W['val']
+                    params[f'b_{id(layer.conv1)}'] = layer.conv1.b['val']
+                if hasattr(layer, 'conv2') and isinstance(layer.conv2, Conv):
+                    params[f'W_{id(layer.conv2)}'] = layer.conv2.W['val']
+                    params[f'b_{id(layer.conv2)}'] = layer.conv2.b['val']
+                if hasattr(layer, 'bn1') and isinstance(layer.bn1, BatchNorm):
+                    params[f'gamma_{id(layer.bn1)}'] = layer.bn1.gamma['val']
+                    params[f'beta_{id(layer.bn1)}'] = layer.bn1.beta['val']
+                if hasattr(layer, 'bn2') and isinstance(layer.bn2, BatchNorm):
+                    params[f'gamma_{id(layer.bn2)}'] = layer.bn2.gamma['val']
+                    params[f'beta_{id(layer.bn2)}'] = layer.bn2.beta['val']
+                if hasattr(layer, 'downsample') and layer.downsample is not None:
+                    if hasattr(layer.downsample, 'conv') and isinstance(layer.downsample.conv, Conv):
+                        params[f'W_{id(layer.downsample.conv)}'] = layer.downsample.conv.W['val']
+                        params[f'b_{id(layer.downsample.conv)}'] = layer.downsample.conv.b['val']
         return params
 
     def forward(self, X):
@@ -289,6 +307,22 @@ class ResNet50:
         # Collect gradients
         grads = self._collect_grads()
         
+        # Debug: Check gradients on first call
+        if not hasattr(self, '_grad_check_done'):
+            self._grad_check_done = True
+            num_grads = len(grads)
+            num_nonzero = sum(1 for g in grads.values() if g is not None and np.sum(np.abs(g)) > 0)
+            print(f"\n🔍 Gradient check:")
+            print(f"   Total parameters: {len(self.params)}")
+            print(f"   Total gradients: {num_grads}")
+            print(f"   Non-zero gradients: {num_nonzero}")
+            if num_nonzero == 0:
+                print(f"   ⚠️  WARNING: All gradients are zero! Backprop may not be working.")
+            # Sample one gradient
+            sample_key = list(grads.keys())[0]
+            sample_grad = grads[sample_key]
+            print(f"   Sample gradient '{sample_key[:20]}...': mean={np.mean(np.abs(sample_grad)):.6f}, max={np.max(np.abs(sample_grad)):.6f}\n")
+        
         # Update parameters
         self.optimizer.update(self.params, grads)
         
@@ -314,4 +348,22 @@ class ResNet50:
             elif isinstance(layer, BatchNorm):
                 grads[f'gamma_{id(layer)}'] = layer.gamma['grad']
                 grads[f'beta_{id(layer)}'] = layer.beta['grad']
+            elif isinstance(layer, ResidualBlock):
+                # Residual blocks contain Conv and BN layers
+                if hasattr(layer, 'conv1') and isinstance(layer.conv1, Conv):
+                    grads[f'W_{id(layer.conv1)}'] = layer.conv1.W['grad']
+                    grads[f'b_{id(layer.conv1)}'] = layer.conv1.b['grad']
+                if hasattr(layer, 'conv2') and isinstance(layer.conv2, Conv):
+                    grads[f'W_{id(layer.conv2)}'] = layer.conv2.W['grad']
+                    grads[f'b_{id(layer.conv2)}'] = layer.conv2.b['grad']
+                if hasattr(layer, 'bn1') and isinstance(layer.bn1, BatchNorm):
+                    grads[f'gamma_{id(layer.bn1)}'] = layer.bn1.gamma['grad']
+                    grads[f'beta_{id(layer.bn1)}'] = layer.bn1.beta['grad']
+                if hasattr(layer, 'bn2') and isinstance(layer.bn2, BatchNorm):
+                    grads[f'gamma_{id(layer.bn2)}'] = layer.bn2.gamma['grad']
+                    grads[f'beta_{id(layer.bn2)}'] = layer.bn2.beta['grad']
+                if hasattr(layer, 'downsample') and layer.downsample is not None:
+                    if hasattr(layer.downsample, 'conv') and isinstance(layer.downsample.conv, Conv):
+                        grads[f'W_{id(layer.downsample.conv)}'] = layer.downsample.conv.W['grad']
+                        grads[f'b_{id(layer.downsample.conv)}'] = layer.downsample.conv.b['grad']
         return grads

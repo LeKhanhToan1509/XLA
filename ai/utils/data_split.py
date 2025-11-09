@@ -1,36 +1,36 @@
+# ai/utils/data_split.py
 import os
-import shutil
-import random
+import cv2
+import numpy as np
 from tqdm import tqdm
+import torchvision.datasets as datasets
+import torchvision.transforms as transforms
+import torch
+from ai.configs.config import ROOT_DIR
 
-SOURCE_DIR = r"D:\PTIT\XLA\data\train"
-DEST_DIR   = r"D:\PTIT\XLA\data_split"
+def split_mnist():
+    # MNIST dataset trả về PIL Image, không cần ToPILImage()
+    transform = transforms.Compose([
+        transforms.Resize((28, 28)),
+        transforms.ToTensor()
+    ])
+    train_dataset = datasets.MNIST(root=ROOT_DIR, train=True, download=True, transform=transform)
+    test_dataset = datasets.MNIST(root=ROOT_DIR, train=False, download=True, transform=transform)
 
-TRAIN_RATIO = 0.7
-VAL_RATIO = 0.15
-TEST_RATIO = 0.15
+    # Split train: 70% train, 15% val, 15% test
+    train_size = int(0.7 * len(train_dataset))
+    val_size = int(0.15 * len(train_dataset))
+    train_data, val_data, test_data = torch.utils.data.random_split(train_dataset, [train_size, val_size, len(train_dataset) - train_size - val_size])
 
-for subset in ["train", "val", "test"]:
-    for cls in os.listdir(SOURCE_DIR):
-        os.makedirs(os.path.join(DEST_DIR, subset, cls), exist_ok=True)
+    splits = {'train': train_data, 'val': val_data, 'test': test_dataset}
+    for split_name, data in splits.items():
+        split_dir = os.path.join(ROOT_DIR, split_name)
+        for digit in range(10):
+            os.makedirs(os.path.join(split_dir, str(digit)), exist_ok=True)
 
-# Chia dữ liệu
-for cls in tqdm(os.listdir(SOURCE_DIR), desc="Splitting classes"):
-    src_folder = os.path.join(SOURCE_DIR, cls)
-    images = os.listdir(src_folder)
-    random.shuffle(images)
+        for idx in tqdm(range(len(data)), desc=f"Đang lưu {split_name}"):
+            img, label = data[idx]
+            img_np = (img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+            cv2.imwrite(os.path.join(split_dir, str(label), f"mnist_{idx}.png"), img_np)
 
-    n_total = len(images)
-    n_train = int(n_total * TRAIN_RATIO)
-    n_val   = int(n_total * VAL_RATIO)
-    n_test  = n_total - n_train - n_val
-
-    train_imgs = images[:n_train]
-    val_imgs   = images[n_train:n_train + n_val]
-    test_imgs  = images[n_train + n_val:]
-
-    for name, subset in [(train_imgs, "train"), (val_imgs, "val"), (test_imgs, "test")]:
-        for img_name in name:
-            src = os.path.join(src_folder, img_name)
-            dst = os.path.join(DEST_DIR, subset, cls, img_name)
-            shutil.copy2(src, dst)
+    print("✅ Đã split và lưu MNIST!")

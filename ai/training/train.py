@@ -1,183 +1,93 @@
-"""
-Training Module for ResNet50
-============================
-
-Quá trình Training:
-1. Forward pass: X → ResNet50 → predictions
-2. Loss calculation: CrossEntropy(predictions, true_labels) 
-3. Backward pass: Backpropagation để tính gradients
-4. Parameter update: Adam optimizer cập nhật weights
-5. Validation: Đánh giá model trên validation set
-
-Công thức Training Loop:
-For each epoch:
-  For each batch:
-    1. y_pred = model.forward(X_batch)
-    2. loss = CrossEntropy(y_pred, y_true)
-    3. gradients = model.backward(loss)
-    4. optimizer.update(parameters, gradients)
-
-Đầu vào:
-- X_train: Training images (N_train, channels, height, width)
-- y_train: Training labels (N_train,)
-- X_val: Validation images (N_val, channels, height, width) 
-- y_val: Validation labels (N_val,)
-- num_classes: Số lượng classes để classify
-
-Đầu ra:
-- model: Trained ResNet50 model
-"""
-
+# ai/training/train.py
+import time
+from tqdm import tqdm
 try:
-    import cupy as np
-    print("✅ Using GPU (CuPy)")
-    GPU_AVAILABLE = True
+    import cupy as cp
+    xp = cp
 except ImportError:
     import numpy as np
-    print("⚠️  Using CPU (NumPy)")
-    GPU_AVAILABLE = False
-from ai.model.resnet import ResNet50
-from ai.data.dataloader import DataLoader
-from ai.configs.config import EPOCHS, LEARNING_RATE
-from ai.model.layers import CrossEntropyLoss
-from tqdm import tqdm
-import time
+    xp = np
 
-def train_model(X_train, y_train, X_val, y_val, num_classes=10):  # Điều chỉnh num_classes
-    from ai.configs.config import BATCH_SIZE
+from ai.configs.config import EPOCHS, BATCH_SIZE, NUM_CLASSES
+from ai.data.dataloader import load_dataset, DataLoader
+from ai.model.resnet import ResNet18
+
+def train_model():
+    print("🔄 Đang load dữ liệu...")
+    X_train, y_train = load_dataset('train')
+    X_val, y_val = load_dataset('val')
     
-    model = ResNet50(num_classes=num_classes)
-    train_loader = DataLoader(X_train, y_train, BATCH_SIZE)
+    # Chuyển sang CuPy nếu có GPU
+    if xp.__name__ == 'cupy':
+        print("🚀 Chuyển data sang GPU...")
+        X_train = xp.asarray(X_train)
+        y_train = xp.asarray(y_train)
+        X_val = xp.asarray(X_val)
+        y_val = xp.asarray(y_val)
+        print("✅ Data đã được chuyển sang GPU")
+
+    train_loader = DataLoader(X_train, y_train, BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(X_val, y_val, BATCH_SIZE, shuffle=False)
-    
-    loss_fn = CrossEntropyLoss()
-    optimizer = model.optimizer  # Đã init trong model
-    
-    print(f"✅ Model initialized!\n")
-    
+
+    model = ResNet18(NUM_CLASSES)
+    print(f"✅ ResNet-18 sẵn sàng! Train: {len(X_train)}, Val: {len(X_val)}")
+
     best_val_acc = 0.0
-    
     for epoch in range(EPOCHS):
-        # Clear GPU cache every few epochs to prevent OOM on 4GB VRAM
-        if GPU_AVAILABLE and epoch > 0 and epoch % 3 == 0:
+        if epoch % 3 == 0 and epoch > 0:
             try:
                 import cupy as cp
                 cp.get_default_memory_pool().free_all_blocks()
-                print(f"\n🧹 Cleared GPU memory cache")
             except:
                 pass
-        
+
         print(f"\n{'='*60}")
         print(f"📊 Epoch {epoch+1}/{EPOCHS}")
         print(f"{'='*60}")
-        
+
         train_loader.reset()
         total_loss = 0
         batch_count = 0
-        
-        # Training loop với progress bar
-        num_batches = len(X_train) // BATCH_SIZE + (1 if len(X_train) % BATCH_SIZE != 0 else 0)
-        pbar = tqdm(train_loader, total=num_batches, desc=f"Training", 
-                    bar_format='{l_bar}{bar:30}{r_bar}')
-        
+
+        num_batches = (len(X_train) + BATCH_SIZE - 1) // BATCH_SIZE
+        pbar = tqdm(range(num_batches), desc="Training")
+
         start_time = time.time()
-        
-        for X_batch, y_batch in pbar:
-            y_onehot = train_loader.one_hot(y_batch, num_classes)
-            
-            # Debug log for first batch of first epoch to verify shapes
-            if epoch == 0 and batch_count == 0:
-                print(f"\n🔍 Debug - First batch shapes:")
-                print(f"   X_batch: {X_batch.shape}")
-                print(f"   y_batch: {y_batch.shape} (integer labels)")
-                print(f"   y_onehot: {y_onehot.shape} (one-hot encoded)")
-                print(f"   y_batch sample: {y_batch[:5]}")
-                print(f"   y_onehot sample:\n{y_onehot[:2]}\n")
-            
+
+        batch_idx = 0
+        for X_batch, y_batch in train_loader:
+            y_onehot = train_loader.one_hot(y_batch)
+            if epoch == 0 and batch_idx == 0:
+                print(f"🔍 Shapes: X {X_batch.shape}, y_onehot {y_onehot.shape}")
             loss = model.train_step(X_batch, y_onehot)
             total_loss += loss
             batch_count += 1
-            
-            # Update progress bar
-            pbar.set_postfix({'loss': f'{loss:.4f}', 'avg_loss': f'{total_loss/batch_count:.4f}'})
-        
+            batch_idx += 1
+            pbar.set_postfix({'loss': f'{loss:.4f}', 'avg': f'{total_loss/batch_count:.4f}'})
+            pbar.update(1)
+
         epoch_time = time.time() - start_time
-        
-        # Guard against division by zero when no batches were processed
-        if batch_count == 0:
-            print(f"\n⚠️  Warning: No training batches were processed in epoch {epoch+1}!")
-            print(f"   Please check if training data is empty or batch size is too large.")
-            continue
-        
-        avg_loss = total_loss / batch_count
-        
-        print(f"\n📉 Training Results:")
-        print(f"   - Average Loss: {avg_loss:.4f}")
-        print(f"   - Time: {epoch_time:.2f}s ({epoch_time/60:.2f}m)")
-        
-        # Validation (skip if validation set is empty)
+        avg_loss = total_loss / batch_count if batch_count > 0 else 0
+        print(f"\n📉 Train Loss: {avg_loss:.4f} | Thời gian: {epoch_time:.2f}s")
+
         if len(X_val) > 0:
-            print(f"\n🔍 Validating...")
-            val_acc = evaluate(model, val_loader, num_classes)
-            print(f"✅ Validation Accuracy: {val_acc*100:.2f}%")
-            
-            # Track best model
+            val_acc = evaluate(model, val_loader)
+            print(f"✅ Val Acc: {val_acc*100:.2f}%")
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
-                print(f"🎯 New best validation accuracy!")
-        else:
-            print(f"\n⚠️  Skipping validation (no validation data)")
-    
-    print(f"\n{'='*60}")
-    print(f"🏆 Training completed!")
-    print(f"   - Best validation accuracy: {best_val_acc*100:.2f}%")
-    print(f"{'='*60}")
-    
+                print(f"🎯 Best mới!")
+                xp.save('../../best_resnet18.pth', model.params)  # Lưu model tốt nhất
+
+    print(f"\n🏆 Hoàn tất! Best Val Acc: {best_val_acc*100:.2f}%")
     return model
 
-def evaluate(model, loader, num_classes):
-    """
-    Evaluation Function
-    ==================
-    
-    Đánh giá accuracy của model trên validation/test set
-    
-    Công thức Accuracy:
-    Accuracy = Số predictions đúng / Tổng số samples
-             = Σ(predicted_class == true_class) / N
-    
-    Đầu vào:
-    - model: Trained model cần evaluate
-    - loader: DataLoader chứa evaluation data
-    - num_classes: Số classes (không dùng trong hàm này)
-    
-    Đầu ra:
-    - accuracy: Float value trong khoảng [0, 1]
-    
-    Lưu ý:
-    - Set model về inference mode (BatchNorm dùng moving stats)
-    - Không cần gradients trong evaluation
-    """
-    correct = 0
-    total = 0
-    
-    # Chuyển sang inference mode
+def evaluate(model, loader):
+    correct = total = 0
     model.set_inference(True)
-    
+    loader.reset()
     for X_batch, y_batch in loader:
-        # Forward pass để lấy predictions
-        y_pred = model.predict(X_batch)  # Returns predicted class indices
-        
-        # Đếm số predictions đúng
-        correct += np.sum(y_pred == y_batch)
+        y_pred = model.predict(X_batch)
+        correct += xp.sum(y_pred == y_batch)
         total += len(y_batch)
-    
-    # Chuyển về training mode
     model.set_inference(False)
-
-    # Tính accuracy: guard against zero total to avoid ZeroDivisionError
-    if total == 0:
-        print("\n\u26a0\ufe0f  Warning: No samples were provided to evaluate() (total=0). Returning accuracy=0.0")
-        return 0.0
-
-    return correct / total
+    return correct / total if total > 0 else 0.0

@@ -1,58 +1,52 @@
+# ai/model/resnet.py
 """
-ResNet (Residual Network) Implementation
-======================================
-
-Công thức chính:
-- Residual connection: F(x) + x = H(x)
-  Trong đó:
-  - F(x): Học residual mapping
-  - x: Identity shortcut connection
-  - H(x): Desired underlying mapping
-
-Đầu vào:
-- Input tensor shape: (batch_size, channels, height, width)
-- Labels shape: (batch_size,) hoặc (batch_size, num_classes) cho one-hot
-
-Kiến trúc:
-1. Conv layer đầu tiên: 7x7, 64 filters
-2. Max pooling: 3x3
-3. 4 nhóm residual blocks với số filters tăng dần: 64->128->256->512
-4. Global average pooling
-5. Fully connected layer cho classification
+ResNet-18 đầy đủ với fix collect_recursive (skip layers không params như ReLU).
+Fallback _last_feature_shape = (1,1) cho input 28x28 sau full layers.
 """
+
+import numpy as np
 
 try:
-    import cupy as np
-    print("✅ Using GPU (CuPy)")
-    GPU_AVAILABLE = True
+    import cupy as cp
+    xp = cp
 except ImportError:
-    import numpy as np
-    print("⚠️  Using CPU (NumPy)")
-    GPU_AVAILABLE = False
-from ai.model.layers import Conv, BatchNorm, ReLU, MaxPool, Fc, Softmax, CrossEntropyLoss
-from ai.utils.optimizers import Adam
-from ai.configs.config import NUM_CLASSES, INPUT_SHAPE
+    xp = np
 
-class ResidualBlock:
-    """
-    Residual Block Implementation
-    ============================
-    
-    Công thức Residual Block:
-    y = F(x, {Wi}) + x
-    
-    Trong đó:
-    - F(x, {Wi}): Stack của các layers (Conv -> BN -> ReLU -> Conv -> BN)
-    - x: Identity shortcut (có thể có downsample nếu dimensions khác nhau)
-    
-    Đầu vào:
-    - x: Feature maps với shape (batch_size, in_channels, height, width)
-    
-    Đầu ra:
-    - y: Feature maps với shape (batch_size, out_channels, height/stride, width/stride)
-    """
+from .layers import Conv, BatchNorm, ReLU, MaxPool, Fc, Softmax, CrossEntropyLoss
+from ..configs.config import NUM_CLASSES, INPUT_SHAPE
+from ..utils.optimizers import Adam
+
+# Implement collect nếu chưa có trong utils (để độc lập)
+def collect_params_recursive(layer, params_dict, prefix=''):
+    if isinstance(layer, (Conv, Fc)):
+        params_dict[f'{prefix}W_{id(layer)}'] = layer.W['val']
+        params_dict[f'{prefix}b_{id(layer)}'] = layer.b['val']
+    elif isinstance(layer, BatchNorm):
+        params_dict[f'{prefix}gamma_{id(layer)}'] = layer.gamma['val']
+        params_dict[f'{prefix}beta_{id(layer)}'] = layer.beta['val']
+    # Skip ReLU, MaxPool (không params)
+    # Recursive cho BasicBlock
+    for attr in ['conv1', 'conv2', 'downsample', 'bn1', 'bn2', 'bn_down']:
+        sub_layer = getattr(layer, attr, None)
+        if sub_layer is not None and not isinstance(sub_layer, (ReLU, MaxPool)):
+            collect_params_recursive(sub_layer, params_dict, f'{prefix}{attr}_')
+
+def collect_grads_recursive(layer, grads_dict, prefix=''):
+    if isinstance(layer, (Conv, Fc)):
+        grads_dict[f'{prefix}W_{id(layer)}'] = layer.W['grad']
+        grads_dict[f'{prefix}b_{id(layer)}'] = layer.b['grad']
+    elif isinstance(layer, BatchNorm):
+        grads_dict[f'{prefix}gamma_{id(layer)}'] = layer.gamma['grad']
+        grads_dict[f'{prefix}beta_{id(layer)}'] = layer.beta['grad']
+    # Skip ReLU, MaxPool
+    for attr in ['conv1', 'conv2', 'downsample', 'bn1', 'bn2', 'bn_down']:
+        sub_layer = getattr(layer, attr, None)
+        if sub_layer is not None and not isinstance(sub_layer, (ReLU, MaxPool)):
+            collect_grads_recursive(sub_layer, grads_dict, f'{prefix}{attr}_')
+
+class BasicBlock:
     def __init__(self, in_channels, out_channels, stride=1, downsample=False):
-        self.conv1 = Conv(out_channels, 1, in_channels, stride=stride, padding=0)
+        self.conv1 = Conv(out_channels, 3, in_channels, stride=stride, padding=1)
         self.bn1 = BatchNorm(out_channels)
         self.relu1 = ReLU()
         self.conv2 = Conv(out_channels, 3, out_channels, stride=1, padding=1)
@@ -64,306 +58,143 @@ class ResidualBlock:
             self.downsample = Conv(out_channels, 1, in_channels, stride=stride, padding=0)
             self.bn_down = BatchNorm(out_channels)
         self.relu_final = ReLU()
-        self.layers = [self.conv1, self.bn1, self.relu1, self.conv2, self.bn2, self.relu2, self.relu_final]
-        if self.downsample:
-            self.layers += [self.downsample, self.bn_down]
 
     def forward(self, X, is_inference=False):
-        """
-        Forward pass của Residual Block
-        
-        Công thức thực hiện:
-        1. F(x) = ReLU(BN(Conv(ReLU(BN(Conv(x))))))
-        2. identity = x hoặc downsample(x) nếu cần
-        3. output = F(x) + identity
-        4. output = ReLU(output)
-        
-        Đầu vào:
-        - X: Input tensor (batch_size, in_channels, H, W)
-        - is_inference: Boolean, chế độ inference hay training
-        
-        Đầu ra:
-        - out: Output tensor (batch_size, out_channels, H', W')
-        """
-        residual = X  # Lưu identity connection
-        
-        # Main path: Conv1x1 -> BN -> ReLU -> Conv3x3 -> BN
+        residual = X.copy()
         out = self.conv1.forward(X)
         out = self.bn1.forward(out)
         out = self.relu1.forward(out)
         out = self.conv2.forward(out)
         out = self.bn2.forward(out)
-        
-        # Shortcut connection với downsample nếu cần
         if self.downsample:
             residual = self.downsample.forward(X)
             residual = self.bn_down.forward(residual)
-        
-        # Element-wise addition: F(x) + x
         out += residual
-        
-        # Final ReLU activation
         out = self.relu_final.forward(out)
         return out
 
     def backward(self, dout, is_inference=False):
         dout = self.relu_final.backward(dout)
-        dout_res = dout
-        dout = self.bn2.backward(dout)
-        dout = self.conv2.backward(dout)
-        dout = self.relu1.backward(dout)
-        dout = self.bn1.backward(dout)
-        dout = self.conv1.backward(dout)
+        dout_residual = dout.copy()
+        dout_main = dout.copy()
+        dout_main = self.bn2.backward(dout_main)
+        dout_main = self.conv2.backward(dout_main)
+        dout_main = self.relu1.backward(dout_main)
+        dout_main = self.bn1.backward(dout_main)
+        dout_main = self.conv1.backward(dout_main)
         if self.downsample:
-            dresidual = self.bn_down.backward(self.downsample.backward(dout_res))
-            dout += self.downsample.backward(dresidual)
-        else:
-            dout += dout_res
-        return dout
+            dout_residual = self.bn_down.backward(dout_residual)
+            dout_residual = self.downsample.backward(dout_residual)
+        return dout_main + dout_residual
 
-class ResNet50:
-    """
-    ResNet-50 Architecture Implementation
-    ====================================
-    
-    Kiến trúc chi tiết:
-    1. Conv1: 7x7, 64 filters, stride=1
-    2. MaxPool: 3x3, stride=1
-    3. Layer1: 3 residual blocks, 64 filters
-    4. Layer2: 4 residual blocks, 128 filters, stride=2 (downsample)
-    5. Layer3: 6 residual blocks, 256 filters, stride=2 (downsample)
-    6. Layer4: 3 residual blocks, 512 filters, stride=2 (downsample)
-    7. Global Average Pooling
-    8. Fully Connected: 512 -> num_classes
-    9. Softmax activation
-    
-    Tổng số layers: 1 + 2*(3+4+6+3) + 1 = 34 layers (conv + fc)
-    
-    Đầu vào:
-    - X: Images tensor (batch_size, channels, height, width)
-    - y: Labels tensor (batch_size,) hoặc (batch_size, num_classes)
-    
-    Đầu ra:
-    - Logits/probabilities: (batch_size, num_classes)
-    """
+class ResNet18:
     def __init__(self, num_classes=NUM_CLASSES):
         self.num_classes = num_classes
-        self.conv1 = Conv(64, 7, INPUT_SHAPE[0], stride=1, padding=3)
+        
+        # Sử dụng CIFAR-style ResNet cho input nhỏ (28x28)
+        # Conv 3x3 stride=1 thay vì 7x7 stride=2, bỏ MaxPool
+        print("🔧 Using ResNet18-CIFAR style for 28x28 input")
+        self.conv1 = Conv(64, 3, INPUT_SHAPE[0], stride=1, padding=1)
         self.bn1 = BatchNorm(64)
-        self.relu1 = ReLU()
-        self.maxpool = MaxPool(3, stride=1, padding=1)  # Keep size ~24
+        self.relu = ReLU()
+        self.maxpool = None  # Không dùng MaxPool cho input nhỏ
         
-        # Residual layers (scale down số blocks cho input nhỏ)
-        # Layer 1: 3 blocks, 64 filters, no downsample
-        self.layer1 = [ResidualBlock(64, 64, stride=1, downsample=False) for _ in range(3)]
-
-        # Layer 2: 4 blocks, 128 filters, first block downsamples
-        self.layer2 = [ResidualBlock(64, 128, stride=2, downsample=True)] + \
-                    [ResidualBlock(128, 128, stride=1, downsample=False) for _ in range(3)]
-
-        # Layer 3: 6 blocks, 256 filters, first block downsamples
-        self.layer3 = [ResidualBlock(128, 256, stride=2, downsample=True)] + \
-                    [ResidualBlock(256, 256, stride=1, downsample=False) for _ in range(5)]
-
-        # Layer 4: 3 blocks, 512 filters, first block downsamples
-        self.layer4 = [ResidualBlock(256, 512, stride=2, downsample=True)] + \
-                    [ResidualBlock(512, 512, stride=1, downsample=False) for _ in range(2)]
-        
-        # Classifier
-        self.avgpool = None  # Sẽ dùng np.mean trong forward
-        self.fc = Fc(512 * 1 * 1, num_classes)  # Giả định sau layer4 là 1x1
+        self.layer1 = [BasicBlock(64, 64, 1, False) for _ in range(2)]
+        self.layer2 = [BasicBlock(64, 128, 2, True)] + [BasicBlock(128, 128, 1, False) for _ in range(1)]
+        self.layer3 = [BasicBlock(128, 256, 2, True)] + [BasicBlock(256, 256, 1, False) for _ in range(1)]
+        self.layer4 = [BasicBlock(256, 512, 2, True)] + [BasicBlock(512, 512, 1, False) for _ in range(1)]
+        self.fc = Fc(512, num_classes)
         self.softmax = Softmax()
         self.loss_fn = CrossEntropyLoss()
         
-        # All layers để collect params (không bao gồm softmax vì không có params)
-        self.all_layers = [self.conv1, self.bn1, self.relu1, self.maxpool] + \
-                          sum([self.layer1, self.layer2, self.layer3, self.layer4], []) + \
-                          [self.fc]
-        
-        self.params = self._collect_params()
+        # All layers (bỏ maxpool)
+        self.all_layers = [self.conv1, self.bn1, self.relu] + \
+                          self.layer1 + self.layer2 + self.layer3 + self.layer4 + [self.fc]
+        self.params = {}
         self.optimizer = Adam(lr=0.001)
         self.is_inference = False
+        self._last_feature_shape = (4, 4)  # 28 -> 28 -> 14 -> 7 -> 4
+        self._collect_params()
 
     def _collect_params(self):
-        params = {}
+        self.params = {}
         for layer in self.all_layers:
-            if isinstance(layer, (Conv, Fc)):
-                params[f'W_{id(layer)}'] = layer.W['val']
-                params[f'b_{id(layer)}'] = layer.b['val']
-            elif isinstance(layer, BatchNorm):
-                params[f'gamma_{id(layer)}'] = layer.gamma['val']
-                params[f'beta_{id(layer)}'] = layer.beta['val']
-            elif isinstance(layer, ResidualBlock):
-                # Residual blocks contain Conv and BN layers
-                if hasattr(layer, 'conv1') and isinstance(layer.conv1, Conv):
-                    params[f'W_{id(layer.conv1)}'] = layer.conv1.W['val']
-                    params[f'b_{id(layer.conv1)}'] = layer.conv1.b['val']
-                if hasattr(layer, 'conv2') and isinstance(layer.conv2, Conv):
-                    params[f'W_{id(layer.conv2)}'] = layer.conv2.W['val']
-                    params[f'b_{id(layer.conv2)}'] = layer.conv2.b['val']
-                if hasattr(layer, 'bn1') and isinstance(layer.bn1, BatchNorm):
-                    params[f'gamma_{id(layer.bn1)}'] = layer.bn1.gamma['val']
-                    params[f'beta_{id(layer.bn1)}'] = layer.bn1.beta['val']
-                if hasattr(layer, 'bn2') and isinstance(layer.bn2, BatchNorm):
-                    params[f'gamma_{id(layer.bn2)}'] = layer.bn2.gamma['val']
-                    params[f'beta_{id(layer.bn2)}'] = layer.bn2.beta['val']
-                if hasattr(layer, 'downsample') and layer.downsample is not None:
-                    if hasattr(layer.downsample, 'conv') and isinstance(layer.downsample.conv, Conv):
-                        params[f'W_{id(layer.downsample.conv)}'] = layer.downsample.conv.W['val']
-                        params[f'b_{id(layer.downsample.conv)}'] = layer.downsample.conv.b['val']
-        return params
+            collect_params_recursive(layer, self.params)
+        print(f"✅ Đã collect {len(self.params)} params")
+
+    def _collect_grads(self):
+        grads = {}
+        for layer in self.all_layers:
+            collect_grads_recursive(layer, grads)
+        return grads
 
     def forward(self, X):
-        """
-        Forward pass qua toàn bộ network
-        
-        Đầu vào:
-        - X: Input images (batch_size, channels, height, width)
-        
-        Đầu ra:
-        - y_pred: Predicted probabilities (batch_size, num_classes)
-        """
-        out = X
-        
-        # Conv1 + BN + ReLU + MaxPool
-        out = self.conv1.forward(out)
+        out = self.conv1.forward(X)
         out = self.bn1.forward(out)
-        out = self.relu1.forward(out)
-        out = self.maxpool.forward(out)
-        
-        # Residual blocks
-        for block in self.layer1:
-            out = block.forward(out, self.is_inference)
-        for block in self.layer2:
-            out = block.forward(out, self.is_inference)
-        for block in self.layer3:
-            out = block.forward(out, self.is_inference)
-        for block in self.layer4:
-            out = block.forward(out, self.is_inference)
-        
-        # Global Average Pooling
-        out = np.mean(out, axis=(2, 3))  # (batch_size, channels)
-        
-        # Fully Connected
+        out = self.relu.forward(out)
+        # Bỏ maxpool cho CIFAR-style
+        for layer in self.layer1 + self.layer2 + self.layer3 + self.layer4:
+            out = layer.forward(out, self.is_inference)
+        self._last_feature_shape = (out.shape[2], out.shape[3])
+        out = xp.mean(out, axis=(2, 3))
         logits = self.fc.forward(out)
-        
-        # Softmax
-        y_pred = self.softmax.forward(logits)
-        
-        return y_pred
+        return self.softmax.forward(logits)
 
     def backward(self, y_pred, y):
-        """
-        Backward pass để tính gradients
-        
-        Đầu vào:
-        - y_pred: Predicted probabilities
-        - y: True labels (one-hot)
-        
-        Lưu ý: Chỉ train FC layer, freeze feature extractor để đơn giản hóa
-        """
-        # Softmax + CrossEntropy backward
         dout = self.softmax.backward(y_pred, y)
-        
-        # FC backward - chỉ cần tính gradient cho FC layer
         dout = self.fc.backward(dout)
-        
-        # Không backprop qua các layer khác (frozen features)
-        # Nếu muốn train full network, cần implement global avg pool backward
-        # và backprop qua tất cả residual blocks
+        batch_size, channels = dout.shape
+        H_out, W_out = self._last_feature_shape
+        dout = dout.reshape(batch_size, channels, 1, 1) / (H_out * W_out)
+        dout = xp.tile(dout, (1, 1, H_out, W_out))
+        for layers in [self.layer4, self.layer3, self.layer2, self.layer1]:
+            for layer in reversed(layers):
+                dout = layer.backward(dout, self.is_inference)
+        # Bỏ maxpool backward cho CIFAR-style
+        dout = self.relu.backward(dout)
+        dout = self.bn1.backward(dout)
+        dout = self.conv1.backward(dout)
 
     def train_step(self, X, y):
-        """
-        Training step with forward + backward
-        
-        Accepts both integer labels and one-hot encoded labels.
-        """
-        # Nếu y chưa phải one-hot (shape = (batch_size,)), thì one-hot encode
-        if len(y.shape) == 1:
-            y_onehot = np.eye(self.num_classes)[y]
-        else:
-            # Nếu y đã là one-hot (shape = (batch_size, num_classes)), dùng luôn
-            y_onehot = y
-        
-        # Set training mode
         self.set_inference(False)
-        
-        # Forward pass
+        # Zero gradients trước mỗi step
+        self._zero_grads()
         y_pred = self.forward(X)
-        
-        # Verify shapes for debugging (only print once)
-        if not hasattr(self, '_debug_printed'):
-            self._debug_printed = True
-            # Only print if shapes look unexpected
-            if y_pred.shape != y_onehot.shape:
-                print(f"⚠️  Shape mismatch in train_step: y_pred {y_pred.shape} vs y_onehot {y_onehot.shape}")
-        
-        # Loss computation
-        loss = self.loss_fn.get(y_pred, y_onehot)
-        
-        # Backward pass
-        self.backward(y_pred, y_onehot)
-        
-        # Collect gradients
+        loss = self.loss_fn.get(y_pred, y)
+        self.backward(y_pred, y)
         grads = self._collect_grads()
-        
-        # Debug: Check gradients on first call
-        if not hasattr(self, '_grad_check_done'):
-            self._grad_check_done = True
-            num_grads = len(grads)
-            num_nonzero = sum(1 for g in grads.values() if g is not None and np.sum(np.abs(g)) > 0)
-            print(f"\n🔍 Gradient check:")
-            print(f"   Total parameters: {len(self.params)}")
-            print(f"   Total gradients: {num_grads}")
-            print(f"   Non-zero gradients: {num_nonzero}")
-            if num_nonzero == 0:
-                print(f"   ⚠️  WARNING: All gradients are zero! Backprop may not be working.")
-            # Sample one gradient
-            sample_key = list(grads.keys())[0]
-            sample_grad = grads[sample_key]
-            print(f"   Sample gradient '{sample_key[:20]}...': mean={np.mean(np.abs(sample_grad)):.6f}, max={np.max(np.abs(sample_grad)):.6f}\n")
-        
-        # Update parameters
         self.optimizer.update(self.params, grads)
-        
         return loss
     
+    def _zero_grads(self):
+        """Reset all gradients to zero"""
+        for layer in self.all_layers:
+            if isinstance(layer, (Conv, Fc)):
+                layer.W['grad'] = xp.zeros_like(layer.W['grad'])
+                layer.b['grad'] = xp.zeros_like(layer.b['grad'])
+            elif isinstance(layer, BatchNorm):
+                layer.gamma['grad'] = xp.zeros_like(layer.gamma['grad'])
+                layer.beta['grad'] = xp.zeros_like(layer.beta['grad'])
+            # Recursive cho BasicBlock
+            if hasattr(layer, 'conv1'):
+                for attr in ['conv1', 'conv2', 'downsample', 'bn1', 'bn2', 'bn_down']:
+                    sub_layer = getattr(layer, attr, None)
+                    if sub_layer and isinstance(sub_layer, (Conv, BatchNorm)):
+                        if isinstance(sub_layer, Conv):
+                            sub_layer.W['grad'] = xp.zeros_like(sub_layer.W['grad'])
+                            sub_layer.b['grad'] = xp.zeros_like(sub_layer.b['grad'])
+                        elif isinstance(sub_layer, BatchNorm):
+                            sub_layer.gamma['grad'] = xp.zeros_like(sub_layer.gamma['grad'])
+                            sub_layer.beta['grad'] = xp.zeros_like(sub_layer.beta['grad'])
+
     def predict(self, X):
-        self.is_inference = True
+        self.set_inference(True)
         y_pred = self.forward(X)
-        self.is_inference = False
-        return np.argmax(y_pred, axis=1)
+        self.set_inference(False)
+        return xp.argmax(y_pred, axis=1)
 
     def set_inference(self, mode=True):
         self.is_inference = mode
         for layer in self.all_layers:
             if isinstance(layer, BatchNorm):
                 layer.use_moving_avg = mode
-    def _collect_grads(self):
-        grads = {}
-        for layer in self.all_layers:
-            if isinstance(layer, (Conv, Fc)):
-                grads[f'W_{id(layer)}'] = layer.W['grad']
-                grads[f'b_{id(layer)}'] = layer.b['grad']
-            elif isinstance(layer, BatchNorm):
-                grads[f'gamma_{id(layer)}'] = layer.gamma['grad']
-                grads[f'beta_{id(layer)}'] = layer.beta['grad']
-            elif isinstance(layer, ResidualBlock):
-                # Residual blocks contain Conv and BN layers
-                if hasattr(layer, 'conv1') and isinstance(layer.conv1, Conv):
-                    grads[f'W_{id(layer.conv1)}'] = layer.conv1.W['grad']
-                    grads[f'b_{id(layer.conv1)}'] = layer.conv1.b['grad']
-                if hasattr(layer, 'conv2') and isinstance(layer.conv2, Conv):
-                    grads[f'W_{id(layer.conv2)}'] = layer.conv2.W['grad']
-                    grads[f'b_{id(layer.conv2)}'] = layer.conv2.b['grad']
-                if hasattr(layer, 'bn1') and isinstance(layer.bn1, BatchNorm):
-                    grads[f'gamma_{id(layer.bn1)}'] = layer.bn1.gamma['grad']
-                    grads[f'beta_{id(layer.bn1)}'] = layer.bn1.beta['grad']
-                if hasattr(layer, 'bn2') and isinstance(layer.bn2, BatchNorm):
-                    grads[f'gamma_{id(layer.bn2)}'] = layer.bn2.gamma['grad']
-                    grads[f'beta_{id(layer.bn2)}'] = layer.bn2.beta['grad']
-                if hasattr(layer, 'downsample') and layer.downsample is not None:
-                    if hasattr(layer.downsample, 'conv') and isinstance(layer.downsample.conv, Conv):
-                        grads[f'W_{id(layer.downsample.conv)}'] = layer.downsample.conv.W['grad']
-                        grads[f'b_{id(layer.downsample.conv)}'] = layer.downsample.conv.b['grad']
-        return grads
